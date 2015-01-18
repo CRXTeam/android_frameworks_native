@@ -17,10 +17,11 @@
 
 
     .text
-    .align
+    .align 2
     .arm
     
     .global iterators0032
+    .type iterators0032, %function
 
 /*
  * iterators0032

@@ -21,7 +21,6 @@
 // skia or SurfaceFlinger are not required to support all of these formats
 // (either as source or destination)
 
-// XXX: we should consolidate these formats and skia's
 
 #ifndef UI_PIXELFORMAT_H
 #define UI_PIXELFORMAT_H
@@ -29,7 +28,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <utils/Errors.h>
-#include <pixelflinger/format.h>
+#include <hardware/hardware.h>
 
 namespace android {
 
@@ -43,7 +42,7 @@ enum {
 
     // logical pixel formats used by the SurfaceFlinger -----------------------
     PIXEL_FORMAT_CUSTOM         = -4,
-        // Custom pixel-format described by a PixelFormatInfo sructure
+        // Custom pixel-format described by a PixelFormatInfo structure
 
     PIXEL_FORMAT_TRANSLUCENT    = -3,
         // System chooses a format that supports translucency (many alpha bits)
@@ -54,52 +53,77 @@ enum {
 
     PIXEL_FORMAT_OPAQUE         = -1,
         // System chooses an opaque format (no alpha bits required)
-    
+
     // real pixel formats supported for rendering -----------------------------
 
-    PIXEL_FORMAT_RGBA_8888   = GGL_PIXEL_FORMAT_RGBA_8888,  // 4x8-bit RGBA
-    PIXEL_FORMAT_RGBX_8888   = GGL_PIXEL_FORMAT_RGBX_8888,  // 4x8-bit RGB0
-    PIXEL_FORMAT_RGB_888     = GGL_PIXEL_FORMAT_RGB_888,    // 3x8-bit RGB
-    PIXEL_FORMAT_RGB_565     = GGL_PIXEL_FORMAT_RGB_565,    // 16-bit RGB
-    PIXEL_FORMAT_RGBA_5551   = GGL_PIXEL_FORMAT_RGBA_5551,  // 16-bit ARGB
-    PIXEL_FORMAT_RGBA_4444   = GGL_PIXEL_FORMAT_RGBA_4444,  // 16-bit ARGB
-    PIXEL_FORMAT_A_8         = GGL_PIXEL_FORMAT_A_8,        // 8-bit A
-    PIXEL_FORMAT_L_8         = GGL_PIXEL_FORMAT_L_8,        // 8-bit L (R=G=B=L)
-    PIXEL_FORMAT_LA_88       = GGL_PIXEL_FORMAT_LA_88,      // 16-bit LA
-    PIXEL_FORMAT_RGB_332     = GGL_PIXEL_FORMAT_RGB_332,    // 8-bit RGB
-
-    PIXEL_FORMAT_YCbCr_422_SP= GGL_PIXEL_FORMAT_YCbCr_422_SP,
-    PIXEL_FORMAT_YCbCr_420_SP= GGL_PIXEL_FORMAT_YCbCr_420_SP,
-
-    // New formats can be added if they're also defined in
-    // pixelflinger/format.h
+    PIXEL_FORMAT_RGBA_8888   = HAL_PIXEL_FORMAT_RGBA_8888,   // 4x8-bit RGBA
+    PIXEL_FORMAT_RGBX_8888   = HAL_PIXEL_FORMAT_RGBX_8888,   // 4x8-bit RGB0
+    PIXEL_FORMAT_RGB_888     = HAL_PIXEL_FORMAT_RGB_888,     // 3x8-bit RGB
+    PIXEL_FORMAT_RGB_565     = HAL_PIXEL_FORMAT_RGB_565,     // 16-bit RGB
+    PIXEL_FORMAT_BGRA_8888   = HAL_PIXEL_FORMAT_BGRA_8888,   // 4x8-bit BGRA
+    PIXEL_FORMAT_RGBA_5551   = 6,                            // 16-bit ARGB
+    PIXEL_FORMAT_RGBA_4444   = 7,                            // 16-bit ARGB
+    PIXEL_FORMAT_sRGB_A_8888 = HAL_PIXEL_FORMAT_sRGB_A_8888, // 4x8-bit sRGB + A
+    PIXEL_FORMAT_sRGB_X_8888 = HAL_PIXEL_FORMAT_sRGB_X_8888, // 4x8-bit sRGB, no A
 };
 
 typedef int32_t PixelFormat;
 
-struct PixelFormatInfo
-{
+#ifdef HAVE_PIXEL_FORMAT_INFO
+struct PixelFormatInfo {
+    enum {
+        INDEX_ALPHA   = 0,
+        INDEX_RED     = 1,
+        INDEX_GREEN   = 2,
+        INDEX_BLUE    = 3
+    };
+
+    enum { // components
+        ALPHA   = 1,
+        RGB     = 2,
+        RGBA    = 3,
+        L       = 4,
+        LA      = 5,
+        OTHER   = 0xFF
+    };
+
+    struct szinfo {
+        uint8_t h;
+        uint8_t l;
+    };
+
     inline PixelFormatInfo() : version(sizeof(PixelFormatInfo)) { }
+    size_t getScanlineSize(unsigned int width) const;
+    size_t getSize(size_t ci) const {
+        return (ci <= 3) ? (cinfo[ci].h - cinfo[ci].l) : 0;
+    }
     size_t      version;
     PixelFormat format;
     size_t      bytesPerPixel;
     size_t      bitsPerPixel;
-    uint8_t     h_alpha;
-    uint8_t     l_alpha;
-    uint8_t     h_red;
-    uint8_t     l_red;
-    uint8_t     h_green;
-    uint8_t     l_green;
-    uint8_t     h_blue;
-    uint8_t     l_blue;
-    uint32_t    reserved[2];
+    union {
+        szinfo      cinfo[4];
+        struct {
+            uint8_t     h_alpha;
+            uint8_t     l_alpha;
+            uint8_t     h_red;
+            uint8_t     l_red;
+            uint8_t     h_green;
+            uint8_t     l_green;
+            uint8_t     h_blue;
+            uint8_t     l_blue;
+        };
+    };
+    uint8_t     components;
+    uint8_t     reserved0[3];
+    uint32_t    reserved1;
 };
 
-// considere caching the results of these functions are they're not
-// guaranteed to be fast.
-ssize_t     bytesPerPixel(PixelFormat format);
-ssize_t     bitsPerPixel(PixelFormat format);
-status_t    getPixelFormatInfo(PixelFormat format, PixelFormatInfo* info);
+status_t getPixelFormatInfo(PixelFormat format, PixelFormatInfo* info);
+#endif
+
+ssize_t bytesPerPixel(PixelFormat format);
+ssize_t bitsPerPixel(PixelFormat format);
 
 }; // namespace android
 

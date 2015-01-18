@@ -14,30 +14,42 @@
  * limitations under the License.
  */
 
-
 #ifndef ANDROID_UI_DISPLAY_INFO_H
 #define ANDROID_UI_DISPLAY_INFO_H
 
 #include <stdint.h>
 #include <sys/types.h>
+#include <utils/Timers.h>
 
 #include <ui/PixelFormat.h>
 
 namespace android {
 
 struct DisplayInfo {
-    uint32_t            w;
-    uint32_t            h;
-    PixelFormatInfo     pixelFormatInfo;
-    uint8_t             orientation;
-    uint8_t             reserved[3];
-    float               fps;
-    float               density;
-    float               xdpi;
-    float               ydpi;
+    uint32_t w;
+    uint32_t h;
+    float xdpi;
+    float ydpi;
+    float fps;
+    float density;
+    uint8_t orientation;
+    bool secure;
+    nsecs_t appVsyncOffset;
+    nsecs_t presentationDeadline;
+#ifdef HAVE_PIXEL_FORMAT_INFO
+    // needed only by old blobs
+    PixelFormatInfo pixelFormatInfo;
+#endif
+};
+
+/* Display orientations as defined in Surface.java and ISurfaceComposer.h. */
+enum {
+    DISPLAY_ORIENTATION_0 = 0,
+    DISPLAY_ORIENTATION_90 = 1,
+    DISPLAY_ORIENTATION_180 = 2,
+    DISPLAY_ORIENTATION_270 = 3
 };
 
 }; // namespace android
 
 #endif // ANDROID_COMPOSER_DISPLAY_INFO_H
-

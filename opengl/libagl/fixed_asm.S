@@ -17,10 +17,12 @@
 
 
     .text
-    .align
+    .align 2
     
     .global gglFloatToFixed
+    .type gglFloatToFixed, %function
     .global gglFloatToFixedFast
+    .type gglFloatToFixedFast, %function
 
 
 /*

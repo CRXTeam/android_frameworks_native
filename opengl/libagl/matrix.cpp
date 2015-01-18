@@ -55,7 +55,8 @@ static void normal__nop(transform_t const*, vec4_t* c, vec4_t const* o);
 static void point2__generic(transform_t const*, vec4_t* c, vec4_t const* o);
 static void point3__generic(transform_t const*, vec4_t* c, vec4_t const* o);
 static void point4__generic(transform_t const*, vec4_t* c, vec4_t const* o);
-static void normal__generic(transform_t const*, vec4_t* c, vec4_t const* o);
+static void point3__mvui(transform_t const*, vec4_t* c, vec4_t const* o);
+static void point4__mvui(transform_t const*, vec4_t* c, vec4_t const* o);
 
 // ----------------------------------------------------------------------------
 #if 0
@@ -98,8 +99,9 @@ static void validate_perspective(ogles_context_t* c, vertex_t* v)
     c->arrays.perspective = (c->clipPlanes.enable) ?
         ogles_vertex_clipAllPerspective3D : ogles_vertex_perspective3D;
     if (enables & (GGL_ENABLE_DEPTH_TEST|GGL_ENABLE_FOG)) {
-        c->arrays.perspective = (c->clipPlanes.enable) ?
-            ogles_vertex_clipAllPerspective3DZ : ogles_vertex_perspective3DZ;
+        c->arrays.perspective = ogles_vertex_perspective3DZ;
+        if (c->clipPlanes.enable || (enables&GGL_ENABLE_FOG))
+            c->arrays.perspective = ogles_vertex_clipAllPerspective3DZ;
     }
     if ((c->arrays.vertex.size != 4) &&
         (c->transforms.mvp4.flags & transform_t::FLAGS_2D_PROJECTION)) {
@@ -208,15 +210,16 @@ void mvui_transform_t::picker()
 {
     flags = 0;
     ops = OP_ALL;
-    point3 = normal__generic;
+    point3 = point3__mvui;
+    point4 = point4__mvui;
 }
 
 void transform_t::dump(const char* what)
 {
     GLfixed const * const m = matrix.m;
-    LOGD("%s:", what);
+    ALOGD("%s:", what);
     for (int i=0 ; i<4 ; i++)
-        LOGD("[%08x %08x %08x %08x] [%f %f %f %f]\n",
+        ALOGD("[%08x %08x %08x %08x] [%f %f %f %f]\n",
             m[I(0,i)], m[I(1,i)], m[I(2,i)], m[I(3,i)],
             fixedToFloat(m[I(0,i)]),
             fixedToFloat(m[I(1,i)]), 
@@ -270,11 +273,11 @@ void matrixf_t::multiply(matrixf_t& r, const matrixf_t& lhs, const matrixf_t& rh
 }
 
 void matrixf_t::dump(const char* what) {
-    LOGD("%s", what);
-    LOGD("[ %9f %9f %9f %9f ]", m[I(0,0)], m[I(1,0)], m[I(2,0)], m[I(3,0)]);
-    LOGD("[ %9f %9f %9f %9f ]", m[I(0,1)], m[I(1,1)], m[I(2,1)], m[I(3,1)]);
-    LOGD("[ %9f %9f %9f %9f ]", m[I(0,2)], m[I(1,2)], m[I(2,2)], m[I(3,2)]);
-    LOGD("[ %9f %9f %9f %9f ]", m[I(0,3)], m[I(1,3)], m[I(2,3)], m[I(3,3)]);
+    ALOGD("%s", what);
+    ALOGD("[ %9f %9f %9f %9f ]", m[I(0,0)], m[I(1,0)], m[I(2,0)], m[I(3,0)]);
+    ALOGD("[ %9f %9f %9f %9f ]", m[I(0,1)], m[I(1,1)], m[I(2,1)], m[I(3,1)]);
+    ALOGD("[ %9f %9f %9f %9f ]", m[I(0,2)], m[I(1,2)], m[I(2,2)], m[I(3,2)]);
+    ALOGD("[ %9f %9f %9f %9f ]", m[I(0,3)], m[I(1,3)], m[I(2,3)], m[I(3,3)]);
 }
 
 void matrixf_t::loadIdentity() {
@@ -595,67 +598,34 @@ void transform_state_t::update_mvit()
 
 void transform_state_t::update_mvui()
 {
+    GLfloat r[16];
     const GLfloat* const mv = modelview.top().elements();
-
-    /*
-    When transforming normals, we can use the upper 3x3 matrix, see:
-    http://www.opengl.org/documentation/specs/version1.1/glspec1.1/node26.html
-    */
     
-    // Also note that:
-    //      l(obj) =  tr(M).l(eye) for infinite light
-    //      l(obj) = inv(M).l(eye) for local light
+    /*
+    When evaluating the lighting equation in eye-space, normals
+    are transformed by the upper 3x3 modelview inverse-transpose.
+    http://www.opengl.org/documentation/specs/version1.1/glspec1.1/node26.html
 
-    const uint32_t ops = modelview.top_ops() & ~OP_TRANSLATE;
-    if (ggl_likely((!(ops & ~OP_ROTATE)) ||
-        (rescaleNormals && modelview.isRigidBody()))) {
-        // if the modelview matrix is a rigid body transformation
-        // (translation, rotation, uniform scaling), then we can bypass
-        // the inverse by transposing the matrix.
-        GLfloat rescale = 1.0f;
-        if (rescaleNormals == GL_RESCALE_NORMAL) {
-            if (!(ops & ~OP_UNIFORM_SCALE)) {
-                rescale = reciprocalf(mv[I(0,0)]);
-            } else {
-                rescale = rsqrtf(
-                        sqrf(mv[I(2,0)]) + sqrf(mv[I(2,1)]) + sqrf(mv[I(2,2)]));
-            }
-        }
-        GLfixed* const x = mvui.matrix.m;
-        for (int i=0 ; i<3 ; i++) {
-            x[I(i,0)] = gglFloatToFixed(mv[I(0,i)] * rescale);
-            x[I(i,1)] = gglFloatToFixed(mv[I(1,i)] * rescale);
-            x[I(i,2)] = gglFloatToFixed(mv[I(2,i)] * rescale);
-        }
-        mvui.picker();
-        return;
-    }
+    (note that inverse-transpose is distributive).
+    Also note that:
+        l(obj) = inv(modelview).l(eye) for local light
+        l(obj) =  tr(modelview).l(eye) for infinite light
+    */
 
-    GLfloat r[3][3];
-    r[0][0] = det22(mv[I(1,1)], mv[I(2,1)], mv[I(1,2)], mv[I(2,2)]);
-    r[0][1] =ndet22(mv[I(0,1)], mv[I(2,1)], mv[I(0,2)], mv[I(2,2)]);
-    r[0][2] = det22(mv[I(0,1)], mv[I(1,1)], mv[I(0,2)], mv[I(1,2)]);
-    r[1][0] =ndet22(mv[I(1,0)], mv[I(2,0)], mv[I(1,2)], mv[I(2,2)]);
-    r[1][1] = det22(mv[I(0,0)], mv[I(2,0)], mv[I(0,2)], mv[I(2,2)]);
-    r[1][2] =ndet22(mv[I(0,0)], mv[I(1,0)], mv[I(0,2)], mv[I(1,2)]);
-    r[2][0] = det22(mv[I(1,0)], mv[I(2,0)], mv[I(1,1)], mv[I(2,1)]);
-    r[2][1] =ndet22(mv[I(0,0)], mv[I(2,0)], mv[I(0,1)], mv[I(2,1)]);
-    r[2][2] = det22(mv[I(0,0)], mv[I(1,0)], mv[I(0,1)], mv[I(1,1)]);        
-
-    GLfloat rdet;
-    if (rescaleNormals == GL_RESCALE_NORMAL) {
-        rdet = rsqrtf(sqrf(r[0][2]) + sqrf(r[1][2]) + sqrf(r[2][2]));
-    } else {
-        rdet = reciprocalf( 
-            r[0][0]*mv[I(0,0)] + r[0][1]*mv[I(1,0)] + r[0][2]*mv[I(2,0)]);
-    }
+    invert(r, mv);
 
     GLfixed* const x = mvui.matrix.m;
-    for (int i=0 ; i<3 ; i++) {
-        x[I(i,0)] = gglFloatToFixed(r[i][0] * rdet);
-        x[I(i,1)] = gglFloatToFixed(r[i][1] * rdet);
-        x[I(i,2)] = gglFloatToFixed(r[i][2] * rdet);
-    }
+
+#if OBJECT_SPACE_LIGHTING
+    for (int i=0 ; i<4 ; i++)
+        for (int j=0 ; j<4 ; j++)
+            x[I(i,j)] = gglFloatToFixed(r[I(i,j)]);
+#else
+    for (int i=0 ; i<4 ; i++)
+        for (int j=0 ; j<4 ; j++)
+            x[I(i,j)] = gglFloatToFixed(r[I(j,i)]);
+#endif
+
     mvui.picker();
 }
 
@@ -741,6 +711,8 @@ void ogles_viewport(ogles_context_t* c,
     f[2] = 0;   f[6] = 0;   f[10] = A;  f[14] = B;
     f[3] = 0;   f[7] = 0;   f[11] = 0;  f[15] = 1;
     c->transforms.dirty |= transform_state_t::VIEWPORT;
+    if (c->transforms.mvp4.flags & transform_t::FLAGS_2D_PROJECTION)
+        c->transforms.dirty |= transform_state_t::MVP;
 }
 
 // ----------------------------------------------------------------------------
@@ -782,16 +754,34 @@ void point4__generic(transform_t const* mx, vec4_t* lhs, vec4_t const* rhs) {
     lhs->w = mla4(rx, m[ 3], ry, m[ 7], rz, m[11], rw, m[15]);
 }
 
-void normal__generic(transform_t const* mx, vec4_t* lhs, vec4_t const* rhs) {
+void point3__mvui(transform_t const* mx, vec4_t* lhs, vec4_t const* rhs) {
+    // this is used for transforming light positions back to object space.
+    // w is used as a switch for directional lights, so we need
+    // to preserve it.
     const GLfixed* const m = mx->matrix.m;
     const GLfixed rx = rhs->x;
     const GLfixed ry = rhs->y;
     const GLfixed rz = rhs->z;
-    lhs->x = mla3(rx, m[ 0], ry, m[ 4], rz, m[ 8]); 
+    lhs->x = mla3(rx, m[ 0], ry, m[ 4], rz, m[ 8]);
     lhs->y = mla3(rx, m[ 1], ry, m[ 5], rz, m[ 9]);
     lhs->z = mla3(rx, m[ 2], ry, m[ 6], rz, m[10]);
+    lhs->w = 0;
 }
 
+void point4__mvui(transform_t const* mx, vec4_t* lhs, vec4_t const* rhs) {
+    // this is used for transforming light positions back to object space.
+    // w is used as a switch for directional lights, so we need
+    // to preserve it.
+    const GLfixed* const m = mx->matrix.m;
+    const GLfixed rx = rhs->x;
+    const GLfixed ry = rhs->y;
+    const GLfixed rz = rhs->z;
+    const GLfixed rw = rhs->w;
+    lhs->x = mla4(rx, m[ 0], ry, m[ 4], rz, m[ 8], rw, m[12]);
+    lhs->y = mla4(rx, m[ 1], ry, m[ 5], rz, m[ 9], rw, m[13]);
+    lhs->z = mla4(rx, m[ 2], ry, m[ 6], rz, m[10], rw, m[14]);
+    lhs->w = rw;
+}
 
 void point2__nop(transform_t const*, vec4_t* lhs, vec4_t const* rhs) {
     lhs->z = 0;

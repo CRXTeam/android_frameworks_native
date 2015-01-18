@@ -38,12 +38,13 @@ static void lightVertex(ogles_context_t* c, vertex_t* v);
 static void lightVertexMaterial(ogles_context_t* c, vertex_t* v);
 
 static inline void vscale3(GLfixed* d, const GLfixed* m, GLfixed s);
-static inline void vsub3w(GLfixed* d, const GLfixed* a, const GLfixed* b);
 
 static __attribute__((noinline))
 void vnorm3(GLfixed* d, const GLfixed* a);
 
 static inline void vsa3(GLfixed* d,
+    const GLfixed* m, GLfixed s, const GLfixed* a);
+static inline void vss3(GLfixed* d,
     const GLfixed* m, GLfixed s, const GLfixed* a);
 static inline void vmla3(GLfixed* d,
     const GLfixed* m0, const GLfixed* m1, const GLfixed* a);
@@ -104,7 +105,7 @@ void ogles_init_light(ogles_context_t* c)
     c->lighting.shadeModel = GL_SMOOTH;
 }
 
-void ogles_uninit_light(ogles_context_t* c)
+void ogles_uninit_light(ogles_context_t* /*c*/)
 {
 }
 
@@ -117,11 +118,11 @@ int32_t clampF(GLfixed f) {
 }
 
 static GLfixed fog_linear(ogles_context_t* c, GLfixed z) {
-    return clampF(gglMulx((c->fog.end - z), c->fog.invEndMinusStart));
+    return clampF(gglMulx((c->fog.end - ((z<0)?-z:z)), c->fog.invEndMinusStart));
 }
 
 static GLfixed fog_exp(ogles_context_t* c, GLfixed z) {
-    const float e = fixedToFloat(gglMulx(c->fog.density, z));
+    const float e = fixedToFloat(gglMulx(c->fog.density, ((z<0)?-z:z)));
     return clampF(gglFloatToFixed(fastexpf(-e)));
 }
 
@@ -151,18 +152,10 @@ void vsa3(GLfixed* d, const GLfixed* m, GLfixed s, const GLfixed* a) {
 }
 
 static inline
-void vsub3w(GLfixed* d, const GLfixed* a, const GLfixed* b) {
-    const GLfixed wa = a[3];
-    const GLfixed wb = b[3];
-    if (ggl_likely(wa == wb)) {
-        d[0] = a[0] - b[0];
-        d[1] = a[1] - b[1];
-        d[2] = a[2] - b[2];
-    } else {
-        d[0] = gglMulSubx(a[0], wb, gglMulx(b[0], wa));
-        d[1] = gglMulSubx(a[1], wb, gglMulx(b[1], wa));
-        d[2] = gglMulSubx(a[2], wb, gglMulx(b[2], wa));
-    }
+void vss3(GLfixed* d, const GLfixed* m, GLfixed s, const GLfixed* a) {
+    d[0] = gglMulSubx(m[0], s, a[0]);
+    d[1] = gglMulSubx(m[1], s, a[1]);
+    d[2] = gglMulSubx(m[2], s, a[2]);
 }
 
 static inline
@@ -223,14 +216,27 @@ static inline void light_picker(ogles_context_t* c)
 static inline void validate_light_mvi(ogles_context_t* c)
 {
     uint32_t en = c->lighting.enabledLights;
+    // Vector from object to viewer, in eye coordinates
     while (en) {
         const int i = 31 - gglClz(en);
         en &= ~(1<<i);
         light_t& l = c->lighting.lights[i];
-        c->transforms.mvui.point3(&c->transforms.mvui,
+#if OBJECT_SPACE_LIGHTING
+        c->transforms.mvui.point4(&c->transforms.mvui,
                 &l.objPosition, &l.position);
+#else
+        l.objPosition = l.position;
+#endif
         vnorm3(l.normalizedObjPosition.v, l.objPosition.v);
     }
+    const vec4_t eyeViewer = { 0, 0, 0x10000, 0 };
+#if OBJECT_SPACE_LIGHTING
+    c->transforms.mvui.point3(&c->transforms.mvui,
+            &c->lighting.objViewer, &eyeViewer);
+    vnorm3(c->lighting.objViewer.v, c->lighting.objViewer.v);
+#else
+    c->lighting.objViewer = eyeViewer;
+#endif
 }
 
 static inline void validate_light(ogles_context_t* c)
@@ -279,7 +285,7 @@ void ogles_invalidate_lighting_mvui(ogles_context_t* c)
     invalidate_lighting(c);
 }
 
-void lightVertexNop(ogles_context_t*, vertex_t* v)
+void lightVertexNop(ogles_context_t*, vertex_t* /*v*/)
 {
     // we should never end-up here
 }
@@ -318,6 +324,11 @@ void lightVertexMaterial(ogles_context_t* c, vertex_t* v)
         vmul3(l.implicitAmbient.v,  material.ambient.v,  l.ambient.v);
         vmul3(l.implicitDiffuse.v,  material.diffuse.v,  l.diffuse.v);
         vmul3(l.implicitSpecular.v, material.specular.v, l.specular.v);
+        // this is just a flag to tell if we have a specular component
+        l.implicitSpecular.v[3] =
+                l.implicitSpecular.r |
+                l.implicitSpecular.g |
+                l.implicitSpecular.b;
     }
     // emission and ambient for the whole scene
     vmla3(  c->lighting.implicitSceneEmissionAndAmbient.v,
@@ -334,6 +345,7 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
 {
     // emission and ambient for the whole scene
     vec4_t r = c->lighting.implicitSceneEmissionAndAmbient;
+    const vec4_t objViewer = c->lighting.objViewer;
 
     uint32_t en = c->lighting.enabledLights;
     if (ggl_likely(en)) {
@@ -343,7 +355,15 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
         vec4_t n;
         c->arrays.normal.fetch(c, n.v,
             c->arrays.normal.element(v->index & vertex_cache_t::INDEX_MASK));
-        if (c->transforms.rescaleNormals == GL_NORMALIZE)
+
+#if !OBJECT_SPACE_LIGHTING
+        c->transforms.mvui.point3(&c->transforms.mvui, &n, &n);
+#endif
+
+        // TODO: right now we handle GL_RESCALE_NORMALS as if it were
+        // GL_NORMALIZE. We could optimize this by  scaling mvui 
+        // appropriately instead.
+        if (c->transforms.rescaleNormals)
             vnorm3(n.v, n.v);
 
         const material_t& material = c->lighting.front;
@@ -360,7 +380,15 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
 
             // compute vertex-to-light vector
             if (ggl_unlikely(l.position.w)) {
-                vsub3w(d.v, l.objPosition.v, v->obj.v);
+                // lightPos/1.0 - vertex/vertex.w == lightPos*vertex.w - vertex
+#if !OBJECT_SPACE_LIGHTING
+                vec4_t o;
+                const transform_t& mv = c->transforms.modelview.transform;
+                mv.point4(&mv, &o, &v->obj);
+                vss3(d.v, l.objPosition.v, o.w, o.v);
+#else
+                vss3(d.v, l.objPosition.v, v->obj.w, v->obj.v);
+#endif
                 sqDist = dot3(d.v, d.v);
                 vscale3(d.v, d.v, gglSqrtRecipx(sqDist));
             } else {
@@ -372,13 +400,13 @@ void lightVertex(ogles_context_t* c, vertex_t* v)
             s = dot3(n.v, d.v);
             s = (s<0) ? (twoSide?(-s):0) : s;
             vsa3(t.v, l.implicitDiffuse.v, s, l.implicitAmbient.v);
-            
+
             // specular
             if (ggl_unlikely(s && l.implicitSpecular.v[3])) {
                 vec4_t h;
-                h.x = d.x;
-                h.y = d.y;
-                h.z = d.z + 0x10000;
+                h.x = d.x + objViewer.x;
+                h.y = d.y + objViewer.y;
+                h.z = d.z + objViewer.z;
                 vnorm3(h.v, h.v);
                 s = dot3(n.v, h.v);
                 s = (s<0) ? (twoSide?(-s):0) : s;
@@ -507,15 +535,18 @@ static void lightxv(GLenum i, GLenum pname, const GLfixed *params, ogles_context
     case GL_POSITION: {
         ogles_validate_transform(c, transform_state_t::MODELVIEW);
         transform_t& mv = c->transforms.modelview.transform;
-        memcpy(light.position.v, params, sizeof(light.position.v));
-        mv.point4(&mv, &light.position, &light.position);
+        mv.point4(&mv, &light.position, reinterpret_cast<vec4_t const*>(params));
         invalidate_lighting(c);
         return;
     }
     case GL_SPOT_DIRECTION: {
+#if OBJECT_SPACE_LIGHTING
         ogles_validate_transform(c, transform_state_t::MVUI);
         transform_t& mvui = c->transforms.mvui;
-        mvui.point3(&mvui, &light.spotDir, (vec4_t*)params);
+        mvui.point3(&mvui, &light.spotDir, reinterpret_cast<vec4_t const*>(params));
+#else
+        light.spotDir = *reinterpret_cast<vec4_t const*>(params);
+#endif
         vnorm3(light.normalizedSpotDir.v, light.spotDir.v);
         invalidate_lighting(c);
         return;
@@ -556,11 +587,11 @@ static void fogx(GLenum pname, GLfixed param, ogles_context_t* c)
         ogles_error(c, GL_INVALID_VALUE);
         break;
     case GL_FOG_START:
-        c->fog.start = gglClampx(param);
+        c->fog.start = param;
         c->fog.invEndMinusStart = gglRecip(c->fog.end - c->fog.start);
         break;
     case GL_FOG_END:
-        c->fog.end = gglClampx(param);
+        c->fog.end = param;
         c->fog.invEndMinusStart = gglRecip(c->fog.end - c->fog.start);
         break;
     case GL_FOG_MODE:
@@ -740,8 +771,8 @@ void glMaterialfv(
     case GL_SPECULAR:   what = c->lighting.front.specular.v; break;
     case GL_EMISSION:   what = c->lighting.front.emission.v; break;
     case GL_AMBIENT_AND_DIFFUSE:
-        what  = c->lighting.front.ambient.v; break;
-        other = c->lighting.front.diffuse.v; break;
+        what  = c->lighting.front.ambient.v;
+        other = c->lighting.front.diffuse.v;
         break;
     case GL_SHININESS:
         c->lighting.front.shininess = gglFloatToFixed(params[0]);
@@ -780,8 +811,8 @@ void glMaterialxv(
     case GL_SPECULAR:   what = c->lighting.front.specular.v; break;
     case GL_EMISSION:   what = c->lighting.front.emission.v; break;
     case GL_AMBIENT_AND_DIFFUSE:
-        what = c->lighting.front.ambient.v; break;
-        other= c->lighting.front.diffuse.v; break;
+        what  = c->lighting.front.ambient.v;
+        other = c->lighting.front.diffuse.v;
         break;
     case GL_SHININESS:
         c->lighting.front.shininess = gglFloatToFixed(params[0]);

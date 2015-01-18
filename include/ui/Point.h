@@ -17,11 +17,12 @@
 #ifndef ANDROID_UI_POINT
 #define ANDROID_UI_POINT
 
+#include <utils/Flattenable.h>
 #include <utils/TypeHelpers.h>
 
 namespace android {
 
-class Point
+class Point : public LightFlattenablePod<Point>
 {
 public:
     int x;
@@ -31,12 +32,9 @@ public:
     // because we want the compiler generated versions
 
     // Default constructor doesn't initialize the Point
-    inline Point()
-    {
+    inline Point() {
     }
-
-    inline Point(int _x, int _y) : x(_x), y(_y)
-    {
+    inline Point(int x, int y) : x(x), y(y) {
     }
 
     inline bool operator == (const Point& rhs) const {
@@ -57,8 +55,8 @@ public:
     }
 
     inline Point& operator - () {
-        x=-x;
-        y=-y;
+        x = -x;
+        y = -y;
         return *this;
     }
     
@@ -73,11 +71,13 @@ public:
         return *this;
     }
     
-    Point operator + (const Point& rhs) const {
-        return Point(x+rhs.x, y+rhs.y);
+    const Point operator + (const Point& rhs) const {
+        const Point result(x+rhs.x, y+rhs.y);
+        return result;
     }
-    Point operator - (const Point& rhs) const {
-        return Point(x-rhs.x, y-rhs.y);
+    const Point operator - (const Point& rhs) const {
+        const Point result(x-rhs.x, y-rhs.y);
+        return result;
     }    
 };
 

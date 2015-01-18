@@ -2,16 +2,16 @@
 **
 ** Copyright 2006, The Android Open Source Project
 **
-** Licensed under the Apache License, Version 2.0 (the "License"); 
-** you may not use this file except in compliance with the License. 
-** You may obtain a copy of the License at 
+** Licensed under the Apache License, Version 2.0 (the "License");
+** you may not use this file except in compliance with the License.
+** You may obtain a copy of the License at
 **
-**     http://www.apache.org/licenses/LICENSE-2.0 
+**     http://www.apache.org/licenses/LICENSE-2.0
 **
-** Unless required by applicable law or agreed to in writing, software 
-** distributed under the License is distributed on an "AS IS" BASIS, 
-** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
-** See the License for the specific language governing permissions and 
+** Unless required by applicable law or agreed to in writing, software
+** distributed under the License is distributed on an "AS IS" BASIS,
+** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+** See the License for the specific language governing permissions and
 ** limitations under the License.
 */
 
@@ -33,7 +33,7 @@ namespace android {
 // ----------------------------------------------------------------------------
 
 static char const * const gVendorString     = "Android";
-static char const * const gRendererString   = "Android PixelFlinger 1.0";
+static char const * const gRendererString   = "Android PixelFlinger 1.4";
 static char const * const gVersionString    = "OpenGL ES-CM 1.0";
 static char const * const gExtensionsString =
     "GL_OES_byte_coordinates "              // OK
@@ -46,9 +46,13 @@ static char const * const gExtensionsString =
     "GL_OES_query_matrix "                  // OK
     //        "GL_OES_point_size_array "              // TODO
     //        "GL_OES_point_sprite "                  // TODO
+    "GL_OES_EGL_image "                     // OK
+    "GL_OES_EGL_sync "                      // OK
+#ifdef GL_OES_compressed_ETC1_RGB8_texture
+    "GL_OES_compressed_ETC1_RGB8_texture "  // OK
+#endif
     "GL_ARB_texture_compression "           // OK
     "GL_ARB_texture_non_power_of_two "      // OK
-    "GL_ANDROID_direct_texture "            // OK
     "GL_ANDROID_user_clip_plane "           // OK
     "GL_ANDROID_vertex_buffer_object "      // OK
     "GL_ANDROID_generate_mipmap "           // OK
@@ -62,13 +66,13 @@ static char const * const gExtensionsString =
 ogles_context_t *ogles_init(size_t extra)
 {
     void* const base = malloc(extra + sizeof(ogles_context_t) + 32);
-	if (!base) return 0;
+    if (!base) return 0;
 
     ogles_context_t *c =
             (ogles_context_t *)((ptrdiff_t(base) + extra + 31) & ~0x1FL);
     memset(c, 0, sizeof(ogles_context_t));
     ggl_init_context(&(c->rasterizer));
-    
+
     // XXX: this should be passed as an argument
     sp<EGLSurfaceManager> smgr(new EGLSurfaceManager());
     c->surfaceManager = smgr.get();
@@ -87,10 +91,10 @@ ogles_context_t *ogles_init(size_t extra)
     c->rasterizer.base = base;
     c->point.size = TRI_ONE;
     c->line.width = TRI_ONE;
-            
+
     // in OpenGL, writing to the depth buffer is enabled by default.
     c->rasterizer.procs.depthMask(c, 1);
-    
+
     // OpenGL enables dithering by default
     c->rasterizer.procs.enable(c, GL_DITHER);
 
@@ -107,7 +111,7 @@ void ogles_uninit(ogles_context_t* c)
     c->surfaceManager->decStrong(c);
     c->bufferObjectManager->decStrong(c);
     ggl_uninit_context(&(c->rasterizer));
-	free(c->rasterizer.base);
+    free(c->rasterizer.base);
 }
 
 void _ogles_error(ogles_context_t* c, GLenum error)
@@ -188,7 +192,10 @@ static void enable_disable(ogles_context_t* c, GLenum cap, int enabled)
         // these need to fall through into the rasterizer
         c->rasterizer.procs.enableDisable(c, cap, enabled);
         break;
-        
+    case GL_TEXTURE_EXTERNAL_OES:
+        c->rasterizer.procs.enableDisable(c, GL_TEXTURE_2D, enabled);
+        break;
+
     case GL_MULTISAMPLE:
     case GL_SAMPLE_ALPHA_TO_COVERAGE:
     case GL_SAMPLE_ALPHA_TO_ONE:
@@ -212,11 +219,11 @@ using namespace android;
 #endif
 
 // These ones are super-easy, we're not supporting those features!
-void glSampleCoverage(GLclampf value, GLboolean invert) {
+void glSampleCoverage(GLclampf /*value*/, GLboolean /*invert*/) {
 }
-void glSampleCoveragex(GLclampx value, GLboolean invert) {
+void glSampleCoveragex(GLclampx /*value*/, GLboolean /*invert*/) {
 }
-void glStencilFunc(GLenum func, GLint ref, GLuint mask) {
+void glStencilFunc(GLenum func, GLint /*ref*/, GLuint /*mask*/) {
     ogles_context_t* c = ogles_context_t::get();
     if (func < GL_NEVER || func > GL_ALWAYS) {
         ogles_error(c, GL_INVALID_ENUM);
@@ -281,7 +288,7 @@ void glHint(GLenum target, GLenum mode)
     case GL_LINE_SMOOTH_HINT:
         break;
     case GL_POINT_SMOOTH_HINT:
-        c->rasterizer.procs.enableDisable(c, 
+        c->rasterizer.procs.enableDisable(c,
                 GGL_POINT_SMOOTH_NICE, mode==GL_NICEST);
         break;
     case GL_PERSPECTIVE_CORRECTION_HINT:
@@ -323,7 +330,7 @@ GLenum glGetError()
         c->error = 0;
         return ret;
     }
-    
+
     if (c->rasterizer.error) {
         const GLenum ret(c->rasterizer.error);
         c->rasterizer.error = 0;
@@ -348,6 +355,7 @@ const GLubyte* glGetString(GLenum string)
 
 void glGetIntegerv(GLenum pname, GLint *params)
 {
+    int i;
     ogles_context_t* c = ogles_context_t::get();
     switch (pname) {
     case GL_ALIASED_POINT_SIZE_RANGE:
@@ -362,25 +370,25 @@ void glGetIntegerv(GLenum pname, GLint *params)
         int index = c->rasterizer.state.buffers.color.format;
         GGLFormat const * formats = gglGetPixelFormatTable();
         params[0] = formats[index].ah - formats[index].al;
-        break; 
+        break;
         }
     case GL_RED_BITS: {
         int index = c->rasterizer.state.buffers.color.format;
         GGLFormat const * formats = gglGetPixelFormatTable();
         params[0] = formats[index].rh - formats[index].rl;
-        break; 
+        break;
         }
     case GL_GREEN_BITS: {
         int index = c->rasterizer.state.buffers.color.format;
         GGLFormat const * formats = gglGetPixelFormatTable();
         params[0] = formats[index].gh - formats[index].gl;
-        break; 
+        break;
         }
     case GL_BLUE_BITS: {
         int index = c->rasterizer.state.buffers.color.format;
         GGLFormat const * formats = gglGetPixelFormatTable();
         params[0] = formats[index].bh - formats[index].bl;
-        break; 
+        break;
         }
     case GL_COMPRESSED_TEXTURE_FORMATS:
         params[ 0] = GL_PALETTE4_RGB8_OES;
@@ -393,6 +401,10 @@ void glGetIntegerv(GLenum pname, GLint *params)
         params[ 7] = GL_PALETTE8_R5_G6_B5_OES;
         params[ 8] = GL_PALETTE8_RGBA4_OES;
         params[ 9] = GL_PALETTE8_RGB5_A1_OES;
+        i = 10;
+#ifdef GL_OES_compressed_ETC1_RGB8_texture
+        params[i++] = GL_ETC1_RGB8_OES;
+#endif
         break;
     case GL_DEPTH_BITS:
         params[0] = c->rasterizer.state.buffers.depth.format ? 0 : 16;
@@ -402,12 +414,6 @@ void glGetIntegerv(GLenum pname, GLint *params)
         break;
     case GL_IMPLEMENTATION_COLOR_READ_TYPE_OES:
         params[0] = GL_UNSIGNED_SHORT_5_6_5;
-        break;
-    case GL_MAX_ELEMENTS_INDICES:
-        params[0] = 65536;
-        break;
-    case GL_MAX_ELEMENTS_VERTICES:
-        params[0] = 0x7FFFFFFF;
         break;
     case GL_MAX_LIGHTS:
         params[0] = OGLES_MAX_LIGHTS;

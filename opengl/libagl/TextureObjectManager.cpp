@@ -1,16 +1,16 @@
 /*
  ** Copyright 2006, The Android Open Source Project
  **
- ** Licensed under the Apache License, Version 2.0 (the "License"); 
- ** you may not use this file except in compliance with the License. 
- ** You may obtain a copy of the License at 
+ ** Licensed under the Apache License, Version 2.0 (the "License");
+ ** you may not use this file except in compliance with the License.
+ ** You may obtain a copy of the License at
  **
- **     http://www.apache.org/licenses/LICENSE-2.0 
+ **     http://www.apache.org/licenses/LICENSE-2.0
  **
- ** Unless required by applicable law or agreed to in writing, software 
- ** distributed under the License is distributed on an "AS IS" BASIS, 
- ** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
- ** See the License for the specific language governing permissions and 
+ ** Unless required by applicable law or agreed to in writing, software
+ ** distributed under the License is distributed on an "AS IS" BASIS,
+ ** WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ ** See the License for the specific language governing permissions and
  ** limitations under the License.
  */
 
@@ -23,7 +23,7 @@ namespace android {
 // ----------------------------------------------------------------------------
 
 EGLTextureObject::EGLTextureObject()
-    : mCount(0), mSize(0)
+    : mSize(0)
 {
     init();
 }
@@ -53,6 +53,7 @@ void EGLTextureObject::init()
     memset(crop_rect, 0, sizeof(crop_rect));
     generate_mipmap = GL_FALSE;
     direct = GL_FALSE;
+    buffer = 0;
 }
 
 void EGLTextureObject::copyParameters(const sp<EGLTextureObject>& old)
@@ -123,13 +124,14 @@ status_t EGLTextureObject::setSurface(GGLSurface const* s)
     }
     surface = *s;
     internalformat = 0;
+    buffer = 0;
 
     // we should keep the crop_rect, but it's delicate because
     // the new size of the surface could make it invalid.
     // so for now, we just loose it.
     memset(crop_rect, 0, sizeof(crop_rect));
 
-    // it would be nice id we could keep the generate_mipmap flag
+    // it would be nice if we could keep the generate_mipmap flag,
     // we would have to generate them right now though.
     generate_mipmap = GL_FALSE;
 
@@ -141,12 +143,26 @@ status_t EGLTextureObject::setSurface(GGLSurface const* s)
     return NO_ERROR;
 }
 
+status_t EGLTextureObject::setImage(ANativeWindowBuffer* native_buffer)
+{
+    GGLSurface sur;
+    sur.version = sizeof(GGLSurface);
+    sur.width = native_buffer->width;
+    sur.height= native_buffer->height;
+    sur.stride= native_buffer->stride;
+    sur.format= native_buffer->format;
+    sur.data  = 0;
+    setSurface(&sur);
+    buffer = native_buffer;
+    return NO_ERROR;
+}
+
 status_t EGLTextureObject::reallocate(
         GLint level, int w, int h, int s,
         int format, int compressedFormat, int bpr)
 {
     const size_t size = h * bpr;
-    if (level == 0) 
+    if (level == 0)
     {
         if (size!=mSize || !surface.data) {
             if (mSize && surface.data) {
@@ -177,9 +193,9 @@ status_t EGLTextureObject::reallocate(
                 return NO_MEMORY;
         }
 
-        LOGW_IF(level-1 >= mNumExtraLod, 
+        ALOGW_IF(level-1 >= mNumExtraLod,
                 "specifying mipmap level %d, but # of level is %d",
-                level, mNumExtraLod+1);        
+                level, mNumExtraLod+1);
 
         GGLSurface& mipmap = editMip(level);
         if (mipmap.data)
@@ -224,7 +240,7 @@ status_t EGLTextureObject::reallocate(
 // ----------------------------------------------------------------------------
 
 EGLSurfaceManager::EGLSurfaceManager()
-    : TokenManager(), mCount(0)
+    : TokenManager()
 {
 }
 
@@ -286,7 +302,7 @@ sp<EGLTextureObject> EGLSurfaceManager::replaceTexture(GLuint name)
 
 void EGLSurfaceManager::deleteTextures(GLsizei n, const GLuint *tokens)
 {
-    // free all texures
+    // free all textures
     Mutex::Autolock _l(mLock);
     for (GLsizei i=0 ; i<n ; i++) {
         const GLuint t(*tokens++);
